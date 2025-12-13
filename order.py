@@ -12,9 +12,30 @@ def make_rowcol_stochastic(mat: np.ndarray) -> np.ndarray:
     return mat
 
 
+def compute_oe_violation(P: np.ndarray,
+                         P_prime: np.ndarray,
+                         order: np.ndarray) -> float:
+    """
+    順序効率性の侵害度合い
+        c(P, P') = Σ_i Σ_t { |Σ_{k<=t}(p'_{iak}-p_{iak})|
+                             - Σ_{k<=t}(p'_{iak}-p_{iak}) }
+    をそのまま計算する補助関数。
+    """
+    N = P.shape[0]
+    total = 0.0
+    for i in range(N):
+        for t in range(N):
+            s = 0.0
+            for k in range(t + 1):
+                a_k = int(order[i, k])
+                s += P_prime[i, a_k] - P[i, a_k]
+            total += abs(s) - s
+    return float(total)
+
+
 def solve_oe_min(P: np.ndarray,
                  order: np.ndarray,
-                 lam: float = 0.1,
+                 lam: float = 0.1,      # 互換のため残し（ここでは未使用）
                  tol: float = 1e-8,
                  verbose: bool = False):
 
@@ -32,11 +53,11 @@ def solve_oe_min(P: np.ndarray,
     for j in range(N):
         model += mip.xsum(P_new[i][j] for i in range(N)) == 1.0
 
-    # ---------- c(P,P_new) 用の d, u ----------
-    d = [[model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
-          for t in range(N)] for i in range(N)]
-    u = [[model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
-          for t in range(N)] for i in range(N)]
+    # ---------- 順序効率性の侵害 c(P,P_new) 用の d_oe, u_oe ----------
+    d_oe = [[model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
+             for t in range(N)] for i in range(N)]
+    u_oe = [[model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
+             for t in range(N)] for i in range(N)]
 
     for i in range(N):
         for t in range(N):
@@ -44,11 +65,11 @@ def solve_oe_min(P: np.ndarray,
             for k in range(t + 1):
                 a_k = int(order[i, k])
                 expr += P_new[i][a_k] - P[i, a_k]
-            model += d[i][t] == expr
-            model += u[i][t] >= d[i][t]
-            model += u[i][t] >= -d[i][t]
+            model += d_oe[i][t] == expr
+            model += u_oe[i][t] >= d_oe[i][t]
+            model += u_oe[i][t] >= -d_oe[i][t]
 
-    c_expr = mip.xsum(u[i][t] - d[i][t] for i in range(N) for t in range(N))
+    c_expr = mip.xsum(u_oe[i][t] - d_oe[i][t] for i in range(N) for t in range(N))
 
     # ---------- 無羨望性 ----------
     for i in range(N):
@@ -62,7 +83,7 @@ def solve_oe_min(P: np.ndarray,
                     expr += P_new[i][a_k] - P_new[j][a_k]
                 model += expr >= 0.0
 
-    # ---------- Strategy-proofness ----------
+    # ---------- Strategy-proofness 用: プロファイル別の割当 G ----------
     all_prefs = list(itertools.permutations(range(N)))
 
     mis_prefs_per_i = {}
@@ -82,18 +103,37 @@ def solve_oe_min(P: np.ndarray,
             for j in range(N):
                 model += mip.xsum(G[key][r][j] for r in range(N)) == 1.0
 
+    # ---------- 画像の「耐戦略性の侵害」式を 0 にする制約 ----------
+    d_sp = {}
+    u_sp = {}
+    sp_terms = []
+
     for i in range(N):
         mis_list = mis_prefs_per_i[i]
         for m_idx, perm in enumerate(mis_list):
             key = (i, m_idx)
             G_im = G[key]
             for t in range(N):
-                top_objs = [int(order[i, k]) for k in range(t + 1)]
-                lhs = mip.xsum(P_new[i][j] for j in top_objs)
-                rhs = mip.xsum(G_im[i][j] for j in top_objs)
-                model += lhs >= rhs
+                var_d = model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
+                var_u = model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
+                d_sp[(i, m_idx, t)] = var_d
+                u_sp[(i, m_idx, t)] = var_u
 
-    # ---------- 目的関数: c(P,P_new) の最小化 ----------
+                expr = 0.0
+                for k in range(t + 1):
+                    a_k = int(order[i, k])
+                    expr += P_new[i][a_k] - G_im[i][a_k]   # p_{iak} - p''_{iak}
+
+                model += var_d == expr
+                model += var_u >= var_d
+                model += var_u >= -var_d
+
+                sp_terms.append(var_u - var_d)  # = |S|-S ≥ 0
+
+    sp_expr = mip.xsum(sp_terms)
+    model += sp_expr == 0.0   # 耐戦略性の侵害を 0 に
+
+    # ---------- 目的関数: 順序効率性の侵害度合い c_expr を最小化 ----------
     model.objective = mip.minimize(c_expr)
     model.optimize()
 
@@ -101,18 +141,12 @@ def solve_oe_min(P: np.ndarray,
                             mip.OptimizationStatus.FEASIBLE):
         raise RuntimeError("最適解が見つかりませんでした")
 
-    c_val = model.objective_value
     P_new_opt = np.array([[P_new[i][j].x for j in range(N)] for i in range(N)])
 
-    # ---------- 順序効率性 violation の計算 ----------
-    violation = 0.0
-    for i in range(N):
-        for t in range(N):
-            for k in range(t + 1):
-                a_k = int(order[i, k])
-                violation += (P_new_opt[i, a_k] - P[i, a_k] + lam)
+    # Strategy-proofness violation（制約で 0 にしているので ≈0 のはず）
+    sp_violation = float(sum(term.x for term in sp_terms))
 
-    return float(c_val), P_new_opt, float(violation)
+    return P_new_opt, sp_violation
 
 
 if __name__ == "__main__":
@@ -128,9 +162,16 @@ if __name__ == "__main__":
     print("\n=== original random matching P ===")
     print(P)
 
-    c_val, P_new, vio = solve_oe_min(P, order, lam=0.1, tol=1e-8, verbose=False)
+    # EF + SP（画像式）を満たしつつ順序効率性の侵害を最小化した P_new を求める
+    P_new, sp_vio = solve_oe_min(P, order, lam=0.1, tol=1e-8, verbose=False)
 
-    print(f"\nmin c(P,P_new) with EF + SP = {c_val:.6e}")
-    print("\n=== P_new (EF & SP matching that minimizes c) ===")
+    # 順序効率性の侵害度合いを明示的に計算
+    c_base = compute_oe_violation(P, P, order)          # c(P,P) ＝ 0 のはず
+    c_new = compute_oe_violation(P, P_new, order)       # c(P,P_new) ＝ 最小化された値
+
+    print(f"\n[Ordinal efficiency violation]")
+    print(f"  c(P, P)      = {c_base:.6e}   (baseline, should be 0)")
+    print(f"  c(P, P_new)  = {c_new:.6e}   (EF + SP 下での最小値)")
+    print(f"\nstrategy-proofness violation (画像の式) = {sp_vio:.6e}")
+    print("\n=== P_new (EF + SP, ordinal-efficiency-violation minimal) ===")
     print(P_new)
-    print(f"\nordinal-efficiency violation (案1) = {vio:.6f}")
