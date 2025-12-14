@@ -12,108 +12,167 @@ def make_rowcol_stochastic(mat: np.ndarray) -> np.ndarray:
     return mat
 
 
-def compute_oe_violation(P: np.ndarray,
-                         P_prime: np.ndarray,
+def compute_oe_violation(P0: np.ndarray,
+                         Pp: np.ndarray,
                          order: np.ndarray) -> float:
     """
-    順序効率性の侵害度合い
-        c(P, P') = Σ_i Σ_t { |Σ_{k<=t}(p'_{iak}-p_{iak})|
-                             - Σ_{k<=t}(p'_{iak}-p_{iak}) }
-    をそのまま計算する補助関数。
+    c(P0, Pp) = Σ_i Σ_t { |Σ_{k<=t}(p'_{iak}-p0_{iak})| - Σ_{k<=t}(p'_{iak}-p0_{iak}) }
     """
-    N = P.shape[0]
+    n = P0.shape[0]
     total = 0.0
-    for i in range(N):
-        for t in range(N):
+    for i in range(n):
+        for t in range(n):
             s = 0.0
             for k in range(t + 1):
-                a_k = int(order[i, k])
-                s += P_prime[i, a_k] - P[i, a_k]
+                a = int(order[i, k])
+                s += Pp[i, a] - P0[i, a]
             total += abs(s) - s
     return float(total)
 
 
-def solve_oe_min(P: np.ndarray,
+def compute_ef_violation(Pp: np.ndarray,
+                         order: np.ndarray) -> float:
+    """
+    「無羨望性の侵害」：
+    Σ_i Σ_{j≠i} Σ_t { |Σ_{k<=t}(p_{iak}-p_{jak})| - Σ_{k<=t}(p_{iak}-p_{jak}) }
+    """
+    n = Pp.shape[0]
+    total = 0.0
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            for t in range(n):
+                s = 0.0
+                for k in range(t + 1):
+                    a = int(order[i, k])
+                    s += Pp[i, a] - Pp[j, a]
+                total += abs(s) - s
+    return float(total)
+
+
+def solve_oe_min(P0: np.ndarray,
                  order: np.ndarray,
-                 lam: float = 0.1,      # 互換のため残し（ここでは未使用）
                  tol: float = 1e-8,
                  verbose: bool = False):
+    """
+    - 目的：順序効率性の侵害 c(P0, P_new) を最小化
+    - 制約：
+        (i) 画像の「無羨望性の侵害」= 0
+        (ii) 画像の「耐戦略性の侵害」= 0
+        (iii) 各プロフィール（真実/虚偽）で割当は二重確率（行和=列和=1）
+    """
 
-    N = P.shape[0]
+    n = P0.shape[0]
     model = mip.Model()
     if not verbose:
         model.verbose = 0
 
-    # ---------- 真実申告プロフィールでの割当 P_new ----------
+    # =========================================================
+    # 真実申告プロフィールでの割当 P_new（変数）
+    # =========================================================
     P_new = [[model.add_var(lb=0.0, ub=1.0, var_type=mip.CONTINUOUS)
-              for j in range(N)] for i in range(N)]
+              for j in range(n)] for i in range(n)]
 
-    for i in range(N):
-        model += mip.xsum(P_new[i][j] for j in range(N)) == 1.0
-    for j in range(N):
-        model += mip.xsum(P_new[i][j] for i in range(N)) == 1.0
+    for i in range(n):
+        model += mip.xsum(P_new[i][j] for j in range(n)) == 1.0
+    for j in range(n):
+        model += mip.xsum(P_new[i][j] for i in range(n)) == 1.0
 
-    # ---------- 順序効率性の侵害 c(P,P_new) 用の d_oe, u_oe ----------
+    # =========================================================
+    # 順序効率性侵害 c(P0, P_new) の線形化（目的関数）
+    # =========================================================
     d_oe = [[model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
-             for t in range(N)] for i in range(N)]
+             for t in range(n)] for i in range(n)]
     u_oe = [[model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
-             for t in range(N)] for i in range(N)]
+             for t in range(n)] for i in range(n)]
 
-    for i in range(N):
-        for t in range(N):
+    for i in range(n):
+        for t in range(n):
             expr = 0.0
             for k in range(t + 1):
-                a_k = int(order[i, k])
-                expr += P_new[i][a_k] - P[i, a_k]
+                a = int(order[i, k])
+                expr += P_new[i][a] - P0[i, a]
             model += d_oe[i][t] == expr
             model += u_oe[i][t] >= d_oe[i][t]
             model += u_oe[i][t] >= -d_oe[i][t]
 
-    c_expr = mip.xsum(u_oe[i][t] - d_oe[i][t] for i in range(N) for t in range(N))
+    c_expr = mip.xsum(u_oe[i][t] - d_oe[i][t] for i in range(n) for t in range(n))
 
-    # ---------- 無羨望性 ----------
-    for i in range(N):
-        for j in range(N):
+    # =========================================================
+    # 無羨望性：「侵害」式を線形化して = 0 を課す
+    # =========================================================
+    # 旧（不等式で直接 EF を課していた）:
+    # for i in range(n):
+    #     for j in range(n):
+    #         if i == j:
+    #             continue
+    #         for t in range(n):
+    #             expr = 0.0
+    #             for k in range(t + 1):
+    #                 a = int(order[i, k])
+    #                 expr += P_new[i][a] - P_new[j][a]
+    #             model += expr >= 0.0
+
+    d_ef = {}
+    u_ef = {}
+    ef_terms = []
+
+    for i in range(n):
+        for j in range(n):
             if i == j:
                 continue
-            for t in range(N):
+            for t in range(n):
+                var_d = model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
+                var_u = model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
+                d_ef[(i, j, t)] = var_d
+                u_ef[(i, j, t)] = var_u
+
                 expr = 0.0
                 for k in range(t + 1):
-                    a_k = int(order[i, k])
-                    expr += P_new[i][a_k] - P_new[j][a_k]
-                model += expr >= 0.0
+                    a = int(order[i, k])         # i の順序で prefix
+                    expr += P_new[i][a] - P_new[j][a]
 
-    # ---------- Strategy-proofness 用: プロファイル別の割当 G ----------
-    all_prefs = list(itertools.permutations(range(N)))
+                model += var_d == expr
+                model += var_u >= var_d
+                model += var_u >= -var_d
+
+                ef_terms.append(var_u - var_d)  # = |S| - S ≥ 0
+
+    ef_expr = mip.xsum(ef_terms)
+    model += ef_expr == 0.0   # ★画像の無羨望性侵害を 0 に固定
+
+    # =========================================================
+    # 耐戦略性：「侵害」式を線形化して = 0 を課す
+    # =========================================================
+    all_prefs = list(itertools.permutations(range(n)))
 
     mis_prefs_per_i = {}
-    for i in range(N):
+    for i in range(n):
         true_pref = tuple(int(x) for x in order[i])
         mis_prefs_per_i[i] = [perm for perm in all_prefs if perm != true_pref]
 
+    # i が虚偽申告 perm をしたときの割当 G^{i,perm}（変数）
     G = {}
-    for i in range(N):
-        mis_list = mis_prefs_per_i[i]
-        for m_idx, perm in enumerate(mis_list):
+    for i in range(n):
+        for m_idx, perm in enumerate(mis_prefs_per_i[i]):
             key = (i, m_idx)
             G[key] = [[model.add_var(lb=0.0, ub=1.0, var_type=mip.CONTINUOUS)
-                       for j in range(N)] for r in range(N)]
-            for r in range(N):
-                model += mip.xsum(G[key][r][j] for j in range(N)) == 1.0
-            for j in range(N):
-                model += mip.xsum(G[key][r][j] for r in range(N)) == 1.0
+                       for j in range(n)] for r in range(n)]
+            for r in range(n):
+                model += mip.xsum(G[key][r][j] for j in range(n)) == 1.0
+            for j in range(n):
+                model += mip.xsum(G[key][r][j] for r in range(n)) == 1.0
 
-    # ---------- 画像の「耐戦略性の侵害」式を 0 にする制約 ----------
     d_sp = {}
     u_sp = {}
     sp_terms = []
 
-    for i in range(N):
-        mis_list = mis_prefs_per_i[i]
-        for m_idx, perm in enumerate(mis_list):
+    for i in range(n):
+        for m_idx, perm in enumerate(mis_prefs_per_i[i]):
             key = (i, m_idx)
             G_im = G[key]
-            for t in range(N):
+            for t in range(n):
                 var_d = model.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
                 var_u = model.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
                 d_sp[(i, m_idx, t)] = var_d
@@ -121,57 +180,61 @@ def solve_oe_min(P: np.ndarray,
 
                 expr = 0.0
                 for k in range(t + 1):
-                    a_k = int(order[i, k])
-                    expr += P_new[i][a_k] - G_im[i][a_k]   # p_{iak} - p''_{iak}
+                    a = int(order[i, k])
+                    expr += P_new[i][a] - G_im[i][a]   # p_{iak} - p''_{iak}
 
                 model += var_d == expr
                 model += var_u >= var_d
                 model += var_u >= -var_d
 
-                sp_terms.append(var_u - var_d)  # = |S|-S ≥ 0
+                sp_terms.append(var_u - var_d)  # = |S| - S ≥ 0
 
     sp_expr = mip.xsum(sp_terms)
-    model += sp_expr == 0.0   # 耐戦略性の侵害を 0 に
+    model += sp_expr == 0.0   # ★画像の耐戦略性侵害を 0 に固定
 
-    # ---------- 目的関数: 順序効率性の侵害度合い c_expr を最小化 ----------
+    # =========================================================
+    # 目的関数：順序効率性侵害 c(P0, P_new) を最小化
+    # =========================================================
     model.objective = mip.minimize(c_expr)
     model.optimize()
 
     if model.status not in (mip.OptimizationStatus.OPTIMAL,
                             mip.OptimizationStatus.FEASIBLE):
-        raise RuntimeError("最適解が見つかりませんでした")
+        raise RuntimeError("最適解が見つかりませんでした（EF=0 と SP=0 が両立しない可能性）")
 
-    P_new_opt = np.array([[P_new[i][j].x for j in range(N)] for i in range(N)])
+    P_new_opt = np.array([[P_new[i][j].x for j in range(n)] for i in range(n)])
 
-    # Strategy-proofness violation（制約で 0 にしているので ≈0 のはず）
+    # 侵害の値（制約で 0 に固定しているので ≈0 のはず）
+    ef_violation = float(sum(term.x for term in ef_terms))
     sp_violation = float(sum(term.x for term in sp_terms))
 
-    return P_new_opt, sp_violation
+    return P_new_opt, ef_violation, sp_violation, float(c_expr.x)
 
 
 if __name__ == "__main__":
-    N = 4
+    n = 4
     np.random.seed(1)
 
-    order = np.array([np.random.permutation(N) for _ in range(N)])
-    P_raw = np.random.rand(N, N)
-    P = make_rowcol_stochastic(P_raw)
+    order = np.array([np.random.permutation(n) for _ in range(n)])
+    P_raw = np.random.rand(n, n)
+    P0 = make_rowcol_stochastic(P_raw)
 
     print("=== preference order (a_1,...,a_4 for each i) ===")
     print(order)
-    print("\n=== original random matching P ===")
-    print(P)
+    print("\n=== original random matching P0 ===")
+    print(P0)
 
-    # EF + SP（画像式）を満たしつつ順序効率性の侵害を最小化した P_new を求める
-    P_new, sp_vio = solve_oe_min(P, order, lam=0.1, tol=1e-8, verbose=False)
+    P_new, ef_vio, sp_vio, c_val = solve_oe_min(P0, order, tol=1e-8, verbose=False)
 
-    # 順序効率性の侵害度合いを明示的に計算
-    c_base = compute_oe_violation(P, P, order)          # c(P,P) ＝ 0 のはず
-    c_new = compute_oe_violation(P, P_new, order)       # c(P,P_new) ＝ 最小化された値
+    c_base = compute_oe_violation(P0, P0, order)
+    c_new = compute_oe_violation(P0, P_new, order)
+    ef_chk = compute_ef_violation(P_new, order)
 
-    print(f"\n[Ordinal efficiency violation]")
-    print(f"  c(P, P)      = {c_base:.6e}   (baseline, should be 0)")
-    print(f"  c(P, P_new)  = {c_new:.6e}   (EF + SP 下での最小値)")
-    print(f"\nstrategy-proofness violation (画像の式) = {sp_vio:.6e}")
-    print("\n=== P_new (EF + SP, ordinal-efficiency-violation minimal) ===")
+    print("\n[Violations]")
+    print(f"  ordinal-efficiency violation c(P0,P0)   = {c_base:.6e}")
+    print(f"  ordinal-efficiency violation c(P0,Pnew) = {c_new:.6e}   (== objective)")
+    print(f"  envy-free violation (image expr)        = {ef_vio:.6e}   (check={ef_chk:.6e})")
+    print(f"  strategy-proof violation (image expr)   = {sp_vio:.6e}")
+
+    print("\n=== P_new (EF=0 & SP=0, minimizes OE violation) ===")
     print(P_new)
