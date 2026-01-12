@@ -1,0 +1,533 @@
+import numpy as np
+import itertools
+import mip
+from collections import deque
+
+# =========================================================
+# Preference orders / ranks / weights
+# =========================================================
+def all_orders(n: int):
+    return list(itertools.permutations(range(n)))
+
+def build_rank_w(orders):
+    m = len(orders)
+    n = len(orders[0])
+    rank = np.zeros((m, n), dtype=int)
+    w = np.zeros((m, n), dtype=float)
+    for r, ord_tup in enumerate(orders):
+        for pos, a in enumerate(ord_tup):
+            rank[r, a] = pos
+        for a in range(n):
+            w[r, a] = float(n - rank[r, a])
+    return rank, w
+
+def prefix_sum_num(P_num, i: int, order_tup, t: int):
+    return mip.xsum(P_num[i][order_tup[k]] for k in range(t + 1))
+
+# =========================================================
+# Profile-set management (closure under unilateral deviations)
+# =========================================================
+def closure_unilateral(prof_set, n: int, m: int, max_profiles: int):
+    q = deque(list(prof_set))
+    while q and len(prof_set) < max_profiles:
+        prof = q.popleft()
+        for i in range(n):
+            for mis_idx in range(m):
+                if mis_idx == prof[i]:
+                    continue
+                mis = list(prof)
+                mis[i] = mis_idx
+                mis = tuple(mis)
+                if mis not in prof_set:
+                    prof_set.add(mis)
+                    q.append(mis)
+                    if len(prof_set) >= max_profiles:
+                        break
+            if len(prof_set) >= max_profiles:
+                break
+    return prof_set
+
+def random_profiles(n: int, m: int, k: int, rng: np.random.Generator):
+    return [tuple(int(rng.integers(0, m)) for _ in range(n)) for _ in range(k)]
+
+# =========================================================
+# Step1: Build EF=0 & SP=0 mechanism on given profile set S (feasible MIP)
+# =========================================================
+def build_mechanism_EFSP_feasible(
+    n: int,
+    profiles,
+    H: int,
+    rng: np.random.Generator,
+    verbose: bool = False,
+):
+    orders = all_orders(n)
+    m = len(orders)
+
+    model = mip.Model(solver_name=mip.CBC)
+    model.verbose = 1 if verbose else 0
+    model.cuts = 0
+    model.cut_passes = 0
+    model.clique = 0
+
+    P_num = {}
+    for prof in profiles:
+        P = [[model.add_var(var_type=mip.INTEGER, lb=0, ub=H) for a in range(n)] for i in range(n)]
+        P_num[prof] = P
+        for i in range(n):
+            model += mip.xsum(P[i][a] for a in range(n)) == H
+        for a in range(n):
+            model += mip.xsum(P[i][a] for i in range(n)) == H
+
+    # EF=0
+    for prof in profiles:
+        P = P_num[prof]
+        for i in range(n):
+            pref_i = orders[prof[i]]
+            for j in range(n):
+                if i == j:
+                    continue
+                for t in range(n):
+                    lhs = prefix_sum_num(P, i, pref_i, t)
+                    rhs = prefix_sum_num(P, j, pref_i, t)
+                    model += lhs - rhs >= 0
+
+    # SP=0 (on S closed under deviations)
+    prof_set = set(profiles)
+    for true_prof in profiles:
+        P_true = P_num[true_prof]
+        for i in range(n):
+            true_pref_i = orders[true_prof[i]]
+            for mis_idx in range(m):
+                if mis_idx == true_prof[i]:
+                    continue
+                mis_prof = list(true_prof)
+                mis_prof[i] = mis_idx
+                mis_prof = tuple(mis_prof)
+                if mis_prof not in prof_set:
+                    continue
+                P_mis = P_num[mis_prof]
+                for t in range(n):
+                    lhs = prefix_sum_num(P_true, i, true_pref_i, t)
+                    rhs = prefix_sum_num(P_mis, i, true_pref_i, t)
+                    model += lhs - rhs >= 0
+
+    # pick a feasible mechanism by random linear objective (still EF/SP feasible)
+    obj = mip.xsum(
+        float(rng.standard_normal()) * P_num[prof][i][a]
+        for prof in profiles for i in range(n) for a in range(n)
+    )
+    model.objective = mip.maximize(obj)
+    model.optimize()
+    return model.status, model, P_num
+
+# =========================================================
+# Step2: min_s LP (image's min_{P'} s) and one dominator point
+# =========================================================
+def solve_min_s_lp(P: np.ndarray, prof, orders, verbose: bool = False):
+    n = P.shape[0]
+    lp = mip.Model(solver_name=mip.CBC)
+    lp.verbose = 1 if verbose else 0
+    lp.cuts = 0
+    lp.cut_passes = 0
+    lp.clique = 0
+
+    X = [[lp.add_var(lb=0.0, ub=1.0, var_type=mip.CONTINUOUS) for a in range(n)] for i in range(n)]
+    for i in range(n):
+        lp += mip.xsum(X[i][a] for a in range(n)) == 1.0
+    for a in range(n):
+        lp += mip.xsum(X[i][a] for i in range(n)) == 1.0
+
+    s_terms = []
+    for i in range(n):
+        pref_i = orders[prof[i]]
+        for t in range(n):
+            d = lp.add_var(lb=-mip.INF, ub=mip.INF, var_type=mip.CONTINUOUS)
+            uabs = lp.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS)
+            prefix_p = float(np.sum(P[i, [pref_i[k] for k in range(t + 1)]]))
+            expr = mip.xsum(X[i][pref_i[k]] for k in range(t + 1)) - prefix_p
+            lp += d == expr
+            lp += uabs >= d
+            lp += uabs >= -d
+            s_terms.append(uabs - d)
+
+    s_expr = mip.xsum(s_terms)
+    lp.objective = mip.minimize(s_expr)
+    lp.optimize()
+    if lp.status not in (mip.OptimizationStatus.OPTIMAL, mip.OptimizationStatus.FEASIBLE):
+        return float("inf")
+    return float(lp.objective_value)
+
+def find_one_dominator(P: np.ndarray, prof, orders, verbose: bool = False):
+    n = P.shape[0]
+    lp = mip.Model(solver_name=mip.CBC)
+    lp.verbose = 1 if verbose else 0
+    lp.cuts = 0
+    lp.cut_passes = 0
+    lp.clique = 0
+
+    X = [[lp.add_var(lb=0.0, ub=1.0, var_type=mip.CONTINUOUS) for a in range(n)] for i in range(n)]
+    for i in range(n):
+        lp += mip.xsum(X[i][a] for a in range(n)) == 1.0
+    for a in range(n):
+        lp += mip.xsum(X[i][a] for i in range(n)) == 1.0
+
+    for i in range(n):
+        pref_i = orders[prof[i]]
+        for t in range(n):
+            prefix_x = mip.xsum(X[i][pref_i[k]] for k in range(t + 1))
+            prefix_p = float(np.sum(P[i, [pref_i[k] for k in range(t + 1)]]))
+            lp += prefix_x >= prefix_p
+
+    # "center-ish": minimize L1 distance to uniform
+    U = 1.0 / float(n)
+    z = [[lp.add_var(lb=0.0, ub=mip.INF, var_type=mip.CONTINUOUS) for a in range(n)] for i in range(n)]
+    for i in range(n):
+        for a in range(n):
+            lp += z[i][a] >= X[i][a] - U
+            lp += z[i][a] >= -(X[i][a] - U)
+    lp.objective = mip.minimize(mip.xsum(z[i][a] for i in range(n) for a in range(n)))
+    lp.optimize()
+
+    if lp.status not in (mip.OptimizationStatus.OPTIMAL, mip.OptimizationStatus.FEASIBLE):
+        return None
+    return np.array([[float(X[i][a].x) for a in range(n)] for i in range(n)], dtype=float)
+
+# =========================================================
+# Hit-and-Run (robust)
+# =========================================================
+def nullspace(A, rtol=1e-12):
+    U, S, Vt = np.linalg.svd(A, full_matrices=True)
+    if S.size == 0:
+        return Vt.T
+    rank = np.sum(S > rtol * S[0])
+    return Vt[rank:].T
+
+def is_feasible(x, Aeq, beq, Aineq, bineq, tol_eq=1e-9, tol_ineq=1e-10):
+    if np.max(np.abs(Aeq @ x - beq)) > tol_eq:
+        return False
+    if x.min() < -1e-10 or x.max() > 1.0 + 1e-10:
+        return False
+    if Aineq.size > 0:
+        if np.min(Aineq @ x - bineq) < -tol_ineq:
+            return False
+    return True
+
+def hit_and_run(
+    x0: np.ndarray,
+    Aeq: np.ndarray,
+    beq: np.ndarray,
+    Aineq: np.ndarray,   # a^T x >= b
+    bineq: np.ndarray,
+    n_samples: int = 200,
+    burnin: int = 200,
+    thinning: int = 5,
+    rng: np.random.Generator = None,
+    tol_interval: float = 1e-12,
+):
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    x = x0.copy()
+    d = x.size
+
+    if not is_feasible(x, Aeq, beq, Aineq, bineq):
+        raise ValueError("hit_and_run: x0 is not feasible (numerically).")
+
+    N = nullspace(Aeq)
+    if N.size == 0:
+        return np.repeat(x[None, :], n_samples, axis=0)
+
+    samples = []
+    total_steps = burnin + n_samples * thinning
+
+    for step in range(total_steps):
+        z = rng.standard_normal(N.shape[1])
+        dirv = N @ z
+        norm = np.linalg.norm(dirv)
+        if norm < 1e-14:
+            continue
+        dirv /= norm
+
+        alpha_min = -np.inf
+        alpha_max = np.inf
+
+        # Box constraints
+        for j in range(d):
+            dj = dirv[j]
+            if abs(dj) < 1e-16:
+                continue
+            a1 = (0.0 - x[j]) / dj
+            a2 = (1.0 - x[j]) / dj
+            lo = min(a1, a2)
+            hi = max(a1, a2)
+            alpha_min = max(alpha_min, lo)
+            alpha_max = min(alpha_max, hi)
+
+        if not (np.isfinite(alpha_min) and np.isfinite(alpha_max)):
+            continue
+        if alpha_max < alpha_min + tol_interval:
+            continue
+
+        # Dominance inequalities
+        if Aineq.size:
+            Ad = Aineq @ dirv
+            Ax = Aineq @ x
+            for r in range(Aineq.shape[0]):
+                den = Ad[r]
+                num = bineq[r] - Ax[r]
+                if abs(den) < 1e-16:
+                    if num > 1e-10:
+                        alpha_min, alpha_max = 1.0, 0.0
+                        break
+                    continue
+                bound = num / den
+                if den > 0:
+                    alpha_min = max(alpha_min, bound)
+                else:
+                    alpha_max = min(alpha_max, bound)
+
+            if alpha_max < alpha_min + tol_interval:
+                continue
+
+        alpha = rng.uniform(alpha_min, alpha_max)
+        x_new = x + alpha * dirv
+
+        # soft cleanup
+        x_new[x_new < 0.0] = 0.0
+        x_new[x_new > 1.0] = 1.0
+
+        if not is_feasible(x_new, Aeq, beq, Aineq, bineq):
+            continue
+
+        x = x_new
+
+        if step >= burnin and ((step - burnin) % thinning == 0):
+            samples.append(x.copy())
+            if len(samples) >= n_samples:
+                break
+
+    if len(samples) == 0:
+        return x0[None, :]
+    return np.stack(samples, axis=0)
+
+# =========================================================
+# OE infringement: argmin(s) average (integral) via MC on D(P)
+# =========================================================
+def oe_infr_argmin_average(
+    P: np.ndarray,
+    prof,
+    orders,
+    w,
+    lam: float,                 # ★ここに lam が入り、下で lam_pairs を作ります
+    tol: float = 1e-10,
+    n_mc: int = 200,
+    burnin: int = 200,
+    thinning: int = 5,
+    rng: np.random.Generator = None,
+    verbose_lp: bool = False,
+):
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    n = P.shape[0]
+    base_pairs = n * (n * (n + 1) / 2.0)
+    lam_pairs = float(lam) * float(base_pairs)  # ★ lam=0.1 なら n=4 で 4.0 になります
+
+    min_s = solve_min_s_lp(P, prof, orders, verbose=verbose_lp)
+    if min_s > tol:
+        return 0.0, float(min_s), 0  # indicator=0 (no dominator)
+
+    P0 = find_one_dominator(P, prof, orders, verbose=verbose_lp)
+    if P0 is None:
+        return 0.0, float(min_s), 0
+
+    # DS equalities (row sums=1, col sums=1 but drop last col to avoid redundancy)
+    d = n * n
+    eqs = []
+    rhs = []
+    for i in range(n):
+        row = np.zeros(d)
+        for a in range(n):
+            row[i * n + a] = 1.0
+        eqs.append(row); rhs.append(1.0)
+    for a in range(n - 1):
+        col = np.zeros(d)
+        for i in range(n):
+            col[i * n + a] = 1.0
+        eqs.append(col); rhs.append(1.0)
+
+    Aeq = np.vstack(eqs)
+    beq = np.array(rhs)
+
+    # dominance inequalities: prefix_x >= prefix_P
+    A_list = []
+    b_list = []
+    for i in range(n):
+        pref_i = orders[prof[i]]
+        for t in range(n):
+            arow = np.zeros(d)
+            for k in range(t + 1):
+                a = pref_i[k]
+                arow[i * n + a] += 1.0
+            A_list.append(arow)
+            b_list.append(float(np.sum(P[i, [pref_i[k] for k in range(t + 1)]])))
+    Aineq = np.vstack(A_list) if len(A_list) else np.zeros((0, d))
+    bineq = np.array(b_list) if len(b_list) else np.zeros((0,))
+
+    x0 = P0.reshape(-1)
+
+    sam = hit_and_run(
+        x0=x0,
+        Aeq=Aeq,
+        beq=beq,
+        Aineq=Aineq,
+        bineq=bineq,
+        n_samples=n_mc,
+        burnin=burnin,
+        thinning=thinning,
+        rng=rng,
+    )
+
+    # E[ Σ w*(P' - P) ] + lam_pairs
+    const = 0.0
+    for i in range(n):
+        pref_idx = prof[i]
+        for a in range(n):
+            const += float(w[pref_idx, a]) * float(P[i, a])
+
+    vals = []
+    for svec in sam:
+        X = svec.reshape(n, n)
+        v = 0.0
+        for i in range(n):
+            pref_idx = prof[i]
+            for a in range(n):
+                v += float(w[pref_idx, a]) * float(X[i, a])
+        vals.append(v - const)
+
+    avg_improvement = float(np.mean(vals))
+    infr = avg_improvement + lam_pairs  # ★ここで + lam_pairs
+    return float(infr), float(min_s), 1
+
+# =========================================================
+# Search (fast-ish): build EF/SP feasible mechanism then evaluate OE by MC integral
+# =========================================================
+def search_n4_fast_argmin_average(
+    H: int = 40,
+    lam: float = 0.1,           # ★デフォルトを 0.1 に変更
+    seed_profiles: int = 8,
+    max_profiles: int = 60,
+    trials: int = 10,
+    rng_seed: int = 1,
+    verbose_build: bool = False,
+    verbose_eval_lp: bool = False,
+    n_mc: int = 120,
+    burnin: int = 150,
+    thinning: int = 5,
+):
+    n = 4
+    orders = all_orders(n)
+    m = len(orders)
+    _, w = build_rank_w(orders)
+
+    rng = np.random.default_rng(rng_seed)
+    best = None
+
+    for tr in range(trials):
+        prof_set = set(random_profiles(n, m, seed_profiles, rng))
+        prof_set = closure_unilateral(prof_set, n=n, m=m, max_profiles=max_profiles)
+        profiles = list(prof_set)
+
+        status, _, P_num = build_mechanism_EFSP_feasible(
+            n=n,
+            profiles=profiles,
+            H=H,
+            rng=rng,
+            verbose=verbose_build,
+        )
+        print(f"[trial {tr}] |S|={len(profiles)} status={status}")
+        if status not in (mip.OptimizationStatus.OPTIMAL, mip.OptimizationStatus.FEASIBLE):
+            continue
+
+        # Extract P
+        P_float = {}
+        for prof in profiles:
+            P = np.zeros((n, n), dtype=float)
+            for i in range(n):
+                for a in range(n):
+                    P[i, a] = float(P_num[prof][i][a].x) / float(H)
+            P_float[prof] = P
+
+        infr_list = []
+        dom_flag = []
+        min_s_list = []
+        for prof in profiles:
+            infr, min_s, has = oe_infr_argmin_average(
+                P_float[prof],
+                prof,
+                orders,
+                w,
+                lam=lam,  # ★ここが 0.1 になります
+                tol=1e-10,
+                n_mc=n_mc,
+                burnin=burnin,
+                thinning=thinning,
+                rng=rng,
+                verbose_lp=verbose_eval_lp,
+            )
+            infr_list.append(infr)
+            min_s_list.append(min_s)
+            dom_flag.append(has)
+
+        avg_infr = float(np.mean(infr_list))
+        dom_frac = float(np.mean(dom_flag))
+        avg_min_s = float(np.mean(min_s_list))
+
+        print(f"          avg_infr={avg_infr:.6e}  dom_frac={dom_frac:.3f}  avg_min_s={avg_min_s:.3e}")
+
+        if best is None or avg_infr < best["avg_infr"]:
+            best = {
+                "trial": tr,
+                "profiles": profiles,
+                "H": H,
+                "lam": lam,
+                "avg_infr": avg_infr,
+                "dom_frac": dom_frac,
+                "avg_min_s": avg_min_s,
+                "P_float": P_float,
+                "status": status,
+                "mc": (n_mc, burnin, thinning),
+            }
+
+    return best
+
+# =========================================================
+# Run
+# =========================================================
+if __name__ == "__main__":
+    best = search_n4_fast_argmin_average(
+        H=40,
+        lam=0.1,            # ★ここで lam=0.1 を明示指定
+        seed_profiles=8,
+        max_profiles=60,
+        trials=10,
+        rng_seed=1,
+        verbose_build=False,
+        verbose_eval_lp=False,
+        n_mc=120,
+        burnin=150,
+        thinning=5,
+    )
+
+    print("\n=== Best ===")
+    if best is None:
+        print("No feasible EF=0 & SP=0 mechanism found on sampled profile sets.")
+    else:
+        print(f"trial={best['trial']} |S|={len(best['profiles'])} H={best['H']} lam={best['lam']} mc={best['mc']}")
+        print(f"avg_infr={best['avg_infr']:.6e}  dom_frac={best['dom_frac']:.3f}  avg_min_s={best['avg_min_s']:.3e}")
+
+        p0 = best["profiles"][0]
+        print("\nExample profile (order indices):")
+        print(p0)
+        print("P(profile):")
+        print(best["P_float"][p0])

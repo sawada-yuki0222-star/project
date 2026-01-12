@@ -58,11 +58,10 @@ def solve_oe_min(P0: np.ndarray,
     """
     - 目的：順序効率性の侵害 c(P0, P_new) を最小化
     - 制約：
-        (i) 画像の「無羨望性の侵害」= 0
-        (ii) 画像の「耐戦略性の侵害」= 0
+        (i) 「無羨望性の侵害」= 0
+        (ii) 「耐戦略性の侵害」= 0
         (iii) 各プロフィール（真実/虚偽）で割当は二重確率（行和=列和=1）
     """
-
     n = P0.shape[0]
     model = mip.Model()
     if not verbose:
@@ -102,18 +101,6 @@ def solve_oe_min(P0: np.ndarray,
     # =========================================================
     # 無羨望性：「侵害」式を線形化して = 0 を課す
     # =========================================================
-    # 旧（不等式で直接 EF を課していた）:
-    # for i in range(n):
-    #     for j in range(n):
-    #         if i == j:
-    #             continue
-    #         for t in range(n):
-    #             expr = 0.0
-    #             for k in range(t + 1):
-    #                 a = int(order[i, k])
-    #                 expr += P_new[i][a] - P_new[j][a]
-    #             model += expr >= 0.0
-
     d_ef = {}
     u_ef = {}
     ef_terms = []
@@ -130,17 +117,17 @@ def solve_oe_min(P0: np.ndarray,
 
                 expr = 0.0
                 for k in range(t + 1):
-                    a = int(order[i, k])         # i の順序で prefix
+                    a = int(order[i, k])
                     expr += P_new[i][a] - P_new[j][a]
 
                 model += var_d == expr
                 model += var_u >= var_d
                 model += var_u >= -var_d
 
-                ef_terms.append(var_u - var_d)  # = |S| - S ≥ 0
+                ef_terms.append(var_u - var_d)
 
     ef_expr = mip.xsum(ef_terms)
-    model += ef_expr == 0.0   # ★画像の無羨望性侵害を 0 に固定
+    model += ef_expr == 0.0
 
     # =========================================================
     # 耐戦略性：「侵害」式を線形化して = 0 を課す
@@ -152,7 +139,6 @@ def solve_oe_min(P0: np.ndarray,
         true_pref = tuple(int(x) for x in order[i])
         mis_prefs_per_i[i] = [perm for perm in all_prefs if perm != true_pref]
 
-    # i が虚偽申告 perm をしたときの割当 G^{i,perm}（変数）
     G = {}
     for i in range(n):
         for m_idx, perm in enumerate(mis_prefs_per_i[i]):
@@ -181,16 +167,16 @@ def solve_oe_min(P0: np.ndarray,
                 expr = 0.0
                 for k in range(t + 1):
                     a = int(order[i, k])
-                    expr += P_new[i][a] - G_im[i][a]   # p_{iak} - p''_{iak}
+                    expr += P_new[i][a] - G_im[i][a]
 
                 model += var_d == expr
                 model += var_u >= var_d
                 model += var_u >= -var_d
 
-                sp_terms.append(var_u - var_d)  # = |S| - S ≥ 0
+                sp_terms.append(var_u - var_d)
 
     sp_expr = mip.xsum(sp_terms)
-    model += sp_expr == 0.0   # ★画像の耐戦略性侵害を 0 に固定
+    model += sp_expr == 0.0
 
     # =========================================================
     # 目的関数：順序効率性侵害 c(P0, P_new) を最小化
@@ -204,7 +190,6 @@ def solve_oe_min(P0: np.ndarray,
 
     P_new_opt = np.array([[P_new[i][j].x for j in range(n)] for i in range(n)])
 
-    # 侵害の値（制約で 0 に固定しているので ≈0 のはず）
     ef_violation = float(sum(term.x for term in ef_terms))
     sp_violation = float(sum(term.x for term in sp_terms))
 
@@ -212,29 +197,84 @@ def solve_oe_min(P0: np.ndarray,
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+
     n = 4
-    np.random.seed(1)
+    seed_order = 1
+    trials = 30
 
-    order = np.array([np.random.permutation(n) for _ in range(n)])
-    P_raw = np.random.rand(n, n)
-    P0 = make_rowcol_stochastic(P_raw)
+    # P0.py が作った ./P0 を使う
+    p0_dir = Path("P0")
 
-    print("=== preference order (a_1,...,a_4 for each i) ===")
+    # 出力先（表と order だけ保存）
+    outdir = Path("batch_outputs")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # order 固定生成
+    rng_order = np.random.default_rng(seed_order)
+    order = np.array([rng_order.permutation(n) for _ in range(n)], dtype=int)
+
+    order_path = outdir / "order_used.txt"
+    np.savetxt(order_path, order, fmt="%d")
+
+    print("=== preference order used ===")
     print(order)
-    print("\n=== original random matching P0 ===")
-    print(P0)
+    print(f"(saved to {order_path})")
 
-    P_new, ef_vio, sp_vio, c_val = solve_oe_min(P0, order, tol=1e-8, verbose=False)
+    results_path = outdir / "oe_results.txt"
+    with results_path.open("w", encoding="utf-8") as f:
+        f.write("=== Batch OE check (using P0 from ./P0) ===\n")
+        f.write(f"n={n}\n")
+        f.write(f"trials={trials}\n")
+        f.write(f"seed_order={seed_order}\n")
+        f.write(f"p0_dir={p0_dir.resolve()}\n\n")
 
-    c_base = compute_oe_violation(P0, P0, order)
-    c_new = compute_oe_violation(P0, P_new, order)
-    ef_chk = compute_ef_violation(P_new, order)
+        f.write("=== order_used (each row: agent i's ranking over objects) ===\n")
+        for i in range(n):
+            f.write(f"agent {i}: {list(map(int, order[i]))}\n")
+        f.write("\n")
 
-    print("\n[Violations]")
-    print(f"  ordinal-efficiency violation c(P0,P0)   = {c_base:.6e}")
-    print(f"  ordinal-efficiency violation c(P0,Pnew) = {c_new:.6e}   (== objective)")
-    print(f"  envy-free violation (image expr)        = {ef_vio:.6e}   (check={ef_chk:.6e})")
-    print(f"  strategy-proof violation (image expr)   = {sp_vio:.6e}")
+        f.write("trial | c_base=c(P0,P0)        | c_new=c(P0,Pnew)        | objective             | EF_returned          | EF_check             | SP_returned          | status\n")
+        f.write("-" * 140 + "\n")
 
-    print("\n=== P_new (EF=0 & SP=0, minimizes OE violation) ===")
-    print(P_new)
+        for t in range(trials):
+            p0_path = p0_dir / f"P0_trial_{t:03d}.txt"
+            if not p0_path.exists():
+                raise FileNotFoundError(
+                    f"P0 file not found: {p0_path}\n"
+                    f"先に `python P0.py` を実行して ./P0/P0_trial_000.txt ... を作ってください。"
+                )
+
+            P0 = np.loadtxt(p0_path)
+            if P0.shape != (n, n):
+                raise ValueError(f"P0 shape mismatch in {p0_path}: got {P0.shape}, expected {(n, n)}")
+
+            try:
+                P_new, ef_vio, sp_vio, obj = solve_oe_min(P0, order, tol=1e-8, verbose=False)
+
+                c_base = compute_oe_violation(P0, P0, order)
+                c_new = compute_oe_violation(P0, P_new, order)
+                ef_chk = compute_ef_violation(P_new, order)
+
+                line = (
+                    f"{t:5d} | "
+                    f"{c_base: .12e} | "
+                    f"{c_new: .12e} | "
+                    f"{obj: .12e} | "
+                    f"{ef_vio: .12e} | "
+                    f"{ef_chk: .12e} | "
+                    f"{sp_vio: .12e} | "
+                    f"OK\n"
+                )
+                f.write(line)
+
+                print(f"[{t:02d}] loaded {p0_path.name}  c_new={c_new:.6e} (obj={obj:.6e})  EFchk={ef_chk:.2e}  SP={sp_vio:.2e}")
+
+            except Exception as e:
+                msg = f"FAIL: {type(e).__name__}: {e}"
+                line = f"{t:5d} | {'':>22} | {'':>22} | {'':>22} | {'':>22} | {'':>22} | {'':>22} | {msg}\n"
+                f.write(line)
+                print(f"[{t:02d}] {msg}")
+
+    print(f"\nSaved results TXT to: {results_path.resolve()}")
+    print(f"Saved order TXT to: {order_path.resolve()}")

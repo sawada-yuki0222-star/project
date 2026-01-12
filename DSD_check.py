@@ -2,14 +2,28 @@ import numpy as np
 import itertools
 import mip
 
+
 # =========================
-# Equal Division Mechanism（等配分）
+# Serial Dictatorship (deterministic)
 # =========================
-def equal_division_allocation(n: int) -> np.ndarray:
+def serial_dictatorship_allocation(prefs, priority):
     """
-    P_{i,a} = 1/n for all i,a
+    prefs[i] : tuple/list of items (best..worst), length n
+    priority : list/tuple of agents in dictator order, length n
+
+    return P (n x n) deterministic assignment matrix (0/1).
     """
-    return np.full((n, n), 1.0 / float(n), dtype=float)
+    n = len(prefs)
+    remaining = set(range(n))
+    P = np.zeros((n, n), dtype=float)
+
+    for i in priority:
+        for a in prefs[i]:
+            if a in remaining:
+                P[i, a] = 1.0
+                remaining.remove(a)
+                break
+    return P
 
 
 # =========================
@@ -69,6 +83,18 @@ def compute_delta_star_lp(P, prefs, w, solver_name=mip.CBC, verbose=False):
     if val < 0 and val > -1e-9:
         val = 0.0
     return val
+
+
+# -------------------------
+# 旧版（最大化で侵害を作るやつ）
+# これは argmin(s) 上の平均/積分ではないので残しつつ不使用にします。
+# -------------------------
+# def infringement_from_delta(delta, lam, n, eps=1e-9):
+#     base_pairs = n * (n * (n + 1) / 2.0)   # n^2(n+1)/2
+#     lam_pairs = float(lam) * float(base_pairs)
+#     s = 1 if delta >= eps else 0
+#     infr = delta + lam_pairs * s
+#     return infr, s, lam_pairs
 
 
 # =========================================================
@@ -194,6 +220,7 @@ def hit_and_run(
 
 # =========================================================
 # Build argmin(s)=D(P): DS + SD-dominance polytope
+#   argmin(s) corresponds to s=0 set (weak SD dominance)
 # =========================================================
 def build_DS_equalities(n: int):
     """
@@ -322,6 +349,7 @@ def argmin_average_improvement_mc(
 
     X0 = find_center_point_in_argmin(P, prefs, verbose=verbose_center_lp)
     if X0 is None:
+        # should not happen because X=P is feasible, but keep safe
         return 0.0, 0
 
     x0 = X0.reshape(-1)
@@ -342,6 +370,7 @@ def argmin_average_improvement_mc(
     for svec in sam:
         X = svec.reshape(n, n)
         v = float(np.sum(w * X)) - const
+        # 数値誤差ガード：本来 v>=0 のはず
         if v < 0 and v > -1e-10:
             v = 0.0
         vals.append(v)
@@ -361,22 +390,22 @@ def infringement_argmin_average(
     verbose_lp: bool = False,
 ):
     """
-    Equal-division OE infringement (image-consistent average/integral version):
-      ind = 1{ exists strict SD-dominator }
-      infr  = ind * ( E_{P' in argmin(s)}[Σ_{i,a} w_i(a)(P' - P)] + lam * n^2(n+1)/2 )
+    Image-consistent (average/integral version):
+      s_ind = 1{ exists strict dominator }   (detected by delta_star > eps)
+      infr  = s_ind * ( E_{P' in argmin(s)}[Σ_{i,a} w_i(a)(P' - P)] + lam * n^2(n+1)/2 )
     """
     n = P.shape[0]
     w = weights_from_prefs(prefs)
 
-    # strict dominator exists?
+    # indicator: strict dominator exists?
     delta_star = compute_delta_star_lp(P, prefs, w, verbose=verbose_lp)
-    ind = 1 if delta_star >= eps else 0
+    s_ind = 1 if delta_star >= eps else 0
 
-    base_pairs = n * (n * (n + 1) / 2.0)   # n^2(n+1)/2
+    base_pairs = n * (n * (n + 1) / 2.0)   # n^2(n+1)/2 = Σ_{i,t,k}1
     lam_pairs = float(lam) * float(base_pairs)
 
-    if ind == 0:
-        return 0.0, 0.0, 0, lam_pairs, 0, float(delta_star)
+    if s_ind == 0:
+        return 0.0, 0.0, 0, lam_pairs, 0  # infr, avg_impr, indicator, lam_pairs, mc_used
 
     avg_impr, mc_used = argmin_average_improvement_mc(
         P=P,
@@ -389,8 +418,8 @@ def infringement_argmin_average(
         verbose_center_lp=False,
     )
 
-    infr = (avg_impr + lam_pairs) * float(ind)
-    return float(infr), float(avg_impr), int(ind), float(lam_pairs), int(mc_used), float(delta_star)
+    infr = (avg_impr + lam_pairs) * float(s_ind)
+    return float(infr), float(avg_impr), int(s_ind), float(lam_pairs), int(mc_used)
 
 
 # =========================
@@ -400,8 +429,9 @@ def sample_random_profile(n, rng):
     return [tuple(rng.permutation(n)) for _ in range(n)]
 
 
-def evaluate_equal_division_oe_infringement_argmin_average(
+def evaluate_sd_oe_infringement_argmin_average(
     n=4,
+    priority=(0, 1, 2, 3),
     samples=200,
     seed=1,
     lam=0.1,
@@ -416,7 +446,6 @@ def evaluate_equal_division_oe_infringement_argmin_average(
     infrs = []
     avgs = []
     inds = []
-    deltas = []
 
     worst = {
         "infr": -1.0,
@@ -426,16 +455,13 @@ def evaluate_equal_division_oe_infringement_argmin_average(
         "P": None,
         "lam_pairs": None,
         "mc_used": None,
-        "delta_star": None,
     }
-
-    # 等配分は prefs に依らない
-    P = equal_division_allocation(n)
 
     for _ in range(samples):
         prefs = sample_random_profile(n, rng)
+        P = serial_dictatorship_allocation(prefs, priority)
 
-        infr, avg_impr, ind, lam_pairs, mc_used, delta_star = infringement_argmin_average(
+        infr, avg_impr, ind, lam_pairs, mc_used = infringement_argmin_average(
             P=P,
             prefs=prefs,
             lam=lam,
@@ -450,7 +476,6 @@ def evaluate_equal_division_oe_infringement_argmin_average(
         infrs.append(infr)
         avgs.append(avg_impr)
         inds.append(ind)
-        deltas.append(delta_star)
 
         if infr > worst["infr"]:
             worst.update({
@@ -461,36 +486,33 @@ def evaluate_equal_division_oe_infringement_argmin_average(
                 "P": P,
                 "lam_pairs": lam_pairs,
                 "mc_used": mc_used,
-                "delta_star": delta_star,
             })
 
     infrs = np.array(infrs, dtype=float)
     avgs = np.array(avgs, dtype=float)
     inds = np.array(inds, dtype=float)
-    deltas = np.array(deltas, dtype=float)
 
-    print("=== Equal Division Mechanism: OE infringement (argmin(s) average / integral) ===")
-    print(f"n={n} samples={samples}")
+    print("=== Deterministic Serial Dictatorship: OE infringement (argmin(s) average / integral) ===")
+    print(f"n={n} priority={tuple(priority)} samples={samples}")
     print(f"lam={lam} eps={eps}  MC=(n_mc={n_mc}, burnin={burnin}, thinning={thinning})")
-    print(f"avg delta_star (indicator LP) = {deltas.mean():.6e}")
-    print(f"strict-dominator fraction    = {inds.mean():.3f}")
     print(f"avg E_improvement(argmin(s)) = {avgs.mean():.6e}")
-    print(f"avg infringement             = {infrs.mean():.6e}")
+    print(f"avg infringement = {infrs.mean():.6e}")
+    print(f"strict-dominator fraction = {inds.mean():.3f}")
 
-    print("\n=== Worst sampled profile (by infringement) ===")
-    print(f"infr = {worst['infr']:.6e}  indicator={worst['ind']}  delta_star={worst['delta_star']:.6e}")
-    print(f"lam_pairs={worst['lam_pairs']:.6e}  mc_used={worst['mc_used']}")
+    print("\n=== Worst sampled profile ===")
+    print(f"infr = {worst['infr']:.6e}  indicator={worst['ind']}  lam_pairs={worst['lam_pairs']:.6e}  mc_used={worst['mc_used']}")
     print(f"avg_improvement(argmin(s)) = {worst['avg_impr']:.6e}")
     print("prefs (each i: best..worst):")
     for i in range(n):
         print(f"  i={i}: {worst['prefs'][i]}")
-    print("P (Equal Division):")
+    print("P (SD outcome):")
     print(worst["P"])
 
 
 if __name__ == "__main__":
-    evaluate_equal_division_oe_infringement_argmin_average(
+    evaluate_sd_oe_infringement_argmin_average(
         n=4,
+        priority=(0, 1, 2, 3),
         samples=200,
         seed=1,
         lam=0.1,
@@ -500,3 +522,4 @@ if __name__ == "__main__":
         thinning=5,
         lp_verbose=False,
     )
+
