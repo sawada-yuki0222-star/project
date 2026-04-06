@@ -318,7 +318,7 @@ def oe_infr_argmin_average(
     prof,
     orders,
     w,
-    lam: float,                 # ★ここに lam が入り、下で lam_pairs を作ります
+    lam: float,                 
     tol: float = 1e-10,
     n_mc: int = 200,
     burnin: int = 200,
@@ -406,7 +406,7 @@ def oe_infr_argmin_average(
         vals.append(v - const)
 
     avg_improvement = float(np.mean(vals))
-    infr = avg_improvement + lam_pairs  # ★ここで + lam_pairs
+    infr = avg_improvement + lam_pairs  
     return float(infr), float(min_s), 1
 
 # =========================================================
@@ -414,7 +414,7 @@ def oe_infr_argmin_average(
 # =========================================================
 def search_n4_fast_argmin_average(
     H: int = 40,
-    lam: float = 0.1,           # ★デフォルトを 0.1 に変更
+    lam: float = 0.1,           
     seed_profiles: int = 8,
     max_profiles: int = 60,
     trials: int = 10,
@@ -467,7 +467,7 @@ def search_n4_fast_argmin_average(
                 prof,
                 orders,
                 w,
-                lam=lam,  # ★ここが 0.1 になります
+                lam=lam, 
                 tol=1e-10,
                 n_mc=n_mc,
                 burnin=burnin,
@@ -507,7 +507,7 @@ def search_n4_fast_argmin_average(
 if __name__ == "__main__":
     best = search_n4_fast_argmin_average(
         H=40,
-        lam=0.1,            # ★ここで lam=0.1 を明示指定
+        lam=0.1,            
         seed_profiles=8,
         max_profiles=60,
         trials=10,

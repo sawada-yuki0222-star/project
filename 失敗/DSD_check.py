@@ -85,18 +85,6 @@ def compute_delta_star_lp(P, prefs, w, solver_name=mip.CBC, verbose=False):
     return val
 
 
-# -------------------------
-# 旧版（最大化で侵害を作るやつ）
-# これは argmin(s) 上の平均/積分ではないので残しつつ不使用にします。
-# -------------------------
-# def infringement_from_delta(delta, lam, n, eps=1e-9):
-#     base_pairs = n * (n * (n + 1) / 2.0)   # n^2(n+1)/2
-#     lam_pairs = float(lam) * float(base_pairs)
-#     s = 1 if delta >= eps else 0
-#     infr = delta + lam_pairs * s
-#     return infr, s, lam_pairs
-
-
 # =========================================================
 # Hit-and-Run utilities (uniform-ish sampling on polytope)
 # =========================================================
