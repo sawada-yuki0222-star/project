@@ -1,0 +1,8 @@
+=== P0 candidates meta ===
+n=4
+k=30
+seed=123
+dir=P0
+max_row_sum_error=2.220446e-16
+max_col_sum_error=8.915415e-02
+fmt=%.18e
