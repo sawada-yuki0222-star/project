@@ -1,0 +1,41 @@
+{
+  "rsd_oe": 0.05591724537037056,
+  "runs": [
+    {
+      "label": "random_seed_0",
+      "status": "verified",
+      "initial_oe": 2.426649305555556,
+      "final_oe": 0.05591724537037056,
+      "rsd_oe": 0.05591724537037056,
+      "difference_vs_rsd": 0.0,
+      "improvement_over_rsd": 0.0,
+      "beats_rsd": false,
+      "improvement_from_initial": 2.370732060185185,
+      "iterations_accepted": 3,
+      "stop_reason": "no_significant_improvement",
+      "exact_sp_violation": 0,
+      "exact_equalities_hold": true,
+      "float_max_sp_violation": 2.220446049250313e-16,
+      "float_max_equality_violation": 1.1102230246251565e-16,
+      "max_inner_lp_residual": 2.220446049250313e-16,
+      "maximum_fraction_denominator": 24,
+      "seed": 0
+    },
+    {
+      "label": "random_seed_1",
+      "seed": 1,
+      "status": "uncertified_lp_solution",
+      "reason": "等式 19 に違反: residual=3/1153573025770",
+      "raw_float_max_sp_violation": 5.076494780098528e-13,
+      "raw_float_max_equality_violation": 1.0151879337172431e-12
+    },
+    {
+      "label": "random_seed_2",
+      "seed": 2,
+      "status": "uncertified_lp_solution",
+      "reason": "等式 37 に違反: residual=-1/390685446558",
+      "raw_float_max_sp_violation": 1.5720758028692217e-13,
+      "raw_float_max_equality_violation": 3.7614356074300304e-13
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+﻿label,status,initial_oe,final_oe,rsd_oe,difference_vs_rsd,improvement_over_rsd,beats_rsd,improvement_from_initial,iterations_accepted,stop_reason,exact_sp_violation,exact_equalities_hold,float_max_sp_violation,float_max_equality_violation,max_inner_lp_residual,maximum_fraction_denominator,lambda
+mixed_0.1,verified,3.595326967592585,0.05591724537037056,0.05591724537037056,0.0,0.0,False,3.5394097222222145,3,no_significant_improvement,0,True,2.220446049250313e-16,1.1102230246251565e-16,2.220446049250313e-16,24,0.1
+mixed_0.5,verified,2.068721064814812,0.05591724537037056,0.05591724537037056,0.0,0.0,False,2.0128038194444415,3,no_significant_improvement,0,True,2.220446049250313e-16,1.1102230246251565e-16,2.220446049250313e-16,24,0.5
+mixed_0.9,verified,0.47667824074074083,0.05591724537037056,0.05591724537037056,0.0,0.0,False,0.42076099537037026,2,no_significant_improvement,0,True,2.220446049250313e-16,1.1102230246251565e-16,2.220446049250313e-16,24,0.9
