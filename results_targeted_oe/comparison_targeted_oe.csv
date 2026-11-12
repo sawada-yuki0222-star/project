@@ -1,0 +1,11 @@
+﻿label,status,initial_oe_avg,initial_oe_total,final_oe_avg,final_oe_total,improvement_over_rsd_total,exact_sp_violation,beats_rsd,stop_reason,raw_float_sp_violation,raw_float_eq_violation,initial_max_difference_rsd,exact_equalities_hold,rational_denominator,final_max_difference_rsd,final_is_rsd_exact
+OE_target_all,optimized_verified,0.9083912037037043,301382.4000000002,0.05591724537037056,18552.000000000062,0.0,0,False,max_iterations_reached,5.780875778071959e-11,5.254241486341016e-12,0.6416666666666666,True,120,0.0,True
+OE_target_top16,exact_initial,1.2957609953703708,429902.40000000014,,,,0,,not yet optimized,2.982536440043759e-11,7.351008690648086e-12,0.5833333333333333,True,240,,
+OE_target_top48,uncertified_lp,,,,,,,,等式 19 に違反: residual=3/1202744752486,2.975730772902807e-12,3.575140183897929e-12,,,,,
+OE_target_top96,optimized_verified,0.9052372685185205,300336.00000000064,0.05591724537037056,18552.000000000062,0.0,0,False,max_iterations_reached,6.481482017761664e-12,2.284394895468722e-12,0.5416666666666667,True,24,0.0,True
+OE_target_subset_0,uncertified_lp,,,,,,,,等式 19 に違反: residual=1/941888237242,2.9006796964381465e-12,4.0816239277319255e-12,,,,,
+OE_target_subset_1,optimized_verified,0.8196614583333341,271944.0000000003,0.05591724537037056,18552.000000000062,0.0,0,False,max_iterations_reached,2.0021428959182686e-11,2.0019541580040823e-12,0.7083333333333333,True,24,0.0,True
+OE_target_subset_2,uncertified_lp,,,,,,,,等式 34 に違反: residual=-1/1207271979054,3.4804381598974032e-12,4.054090396721222e-12,,,,,
+LP_discrete_0,uncertified_lp,,,,,,,,等式 34 に違反: residual=-49/1628518822494,1.4904744105592727e-12,1.0582645870726992e-12,,,,,
+LP_discrete_1,uncertified_lp,,,,,,,,等式 49 に違反: residual=1/373658611110,2.825406575368561e-12,6.112887973586112e-12,,,,,
+LP_discrete_2,uncertified_lp,,,,,,,,等式 19 に違反: residual=1/968938693222,1.1828316104356418e-12,1.709299368712891e-12,,,,,
